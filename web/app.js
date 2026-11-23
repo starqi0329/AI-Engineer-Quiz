@@ -6,10 +6,19 @@ const state = { token: localStorage.getItem("keepstack_token"), user: null,
 
 // ---------- API helper ----------
 async function api(path, opts = {}) {
-  const headers = opts.headers || {};
+  const headers = { ...(opts.headers || {}) };
   if (state.token) headers["Authorization"] = "Bearer " + state.token;
-  if (opts.json) { headers["Content-Type"] = "application/json"; opts.body = JSON.stringify(opts.json); }
-  const res = await fetch(path, { ...opts, headers });
+
+  const { method, json, body } = opts;
+  const init = { method, headers };
+  if (json !== undefined) {
+    headers["Content-Type"] = "application/json";
+    init.body = JSON.stringify(json);
+  } else if (body !== undefined) {
+    init.body = body;
+  }
+
+  const res = await fetch(path, init);
   if (res.status === 401) { logout(); throw new Error("unauthorised"); }
   if (!res.ok) { const t = await res.text(); throw new Error(t || res.statusText); }
   return res.headers.get("content-type")?.includes("json") ? res.json() : res;
@@ -26,7 +35,7 @@ const esc = (s) => (s ?? "").toString().replace(/[&<>"]/g, c => ({"&":"&amp;","<
 $("#login-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   try {
-    const r = await api("/api/auth/login", { json: { username: $("#login-user").value, password: $("#login-pass").value } });
+    const r = await api("/api/auth/login", { method: "POST", json: { username: $("#login-user").value, password: $("#login-pass").value } });
     state.token = r.token; localStorage.setItem("keepstack_token", r.token);
     state.user = r.user; enterApp();
   } catch { $("#login-error").textContent = "Invalid credentials"; $("#login-error").classList.remove("hidden"); }
@@ -68,7 +77,7 @@ async function loadLibrary() {
   if (state.media) p.set("media_type", state.media);
   if (state.tag) p.set("tag", state.tag);
   if (state.collection) p.set("collection_id", state.collection);
-  const data = await api("/api/assets?" + p.toString());
+  const data = await api("/api/assets?" + p.toString(), { method: "GET" });
   renderFacets(data.facets);
   renderGrid(data.items, data.total);
   const filt = state.media || (state.tag ? "#" + state.tag : null) || (state.collection ? "collection" : null);
@@ -110,9 +119,9 @@ async function openAsset(uuid) {
   document.body.classList.add("modal-open");
   $("#drawer-body").innerHTML = '<p class="muted">Loading...</p>';
   const [d, meta, sim] = await Promise.all([
-    api("/api/assets/" + uuid),
-    api("/api/assets/" + uuid + "/metadata"),
-    api("/api/assets/" + uuid + "/similar"),
+    api("/api/assets/" + uuid, { method: "GET" }),
+    api("/api/assets/" + uuid + "/metadata", { method: "GET" }),
+    api("/api/assets/" + uuid + "/similar", { method: "GET" }),
   ]);
   const a = d.asset;
   const canEdit = ["admin","editor","contributor"].includes(state.user.role);
@@ -172,7 +181,7 @@ async function openAsset(uuid) {
     });
     $("#tag-add")?.addEventListener("keydown", async (e) => {
       if (e.key === "Enter" && e.target.value.trim()) {
-        await api("/api/assets/"+uuid+"/tags", { json: { name: e.target.value.trim() } });
+        await api("/api/assets/"+uuid+"/tags", { method: "POST", json: { name: e.target.value.trim() } });
         openAsset(uuid);
       }
     });
@@ -181,7 +190,7 @@ async function openAsset(uuid) {
       openAsset(uuid);
     }));
     $("#d-share")?.addEventListener("click", async () => {
-      const r = await api("/api/shares", { json: { target_type: "asset", target_id: a.id, permission: "download" } });
+      const r = await api("/api/shares", { method: "POST", json: { target_type: "asset", target_id: a.id, permission: "download" } });
       await navigator.clipboard?.writeText(r.url).catch(()=>{});
       toast("Share link copied: " + r.url);
     });
@@ -223,7 +232,7 @@ async function uploadFiles(files) {
 
 // ---------- collections ----------
 async function loadCollections() {
-  const data = await api("/api/collections");
+  const data = await api("/api/collections", { method: "GET" });
   $("#collection-list").innerHTML = data.collections.map(c =>
     `<div class="collection-card" data-id="${c.id}"><span class="n">${esc(c.name)}</span><span class="muted">${c.asset_count} assets</span><span class="muted">${esc(c.description||"")}</span></div>`).join("")
     || '<p class="muted">No collections yet.</p>';
@@ -237,12 +246,12 @@ async function loadCollections() {
 }
 $("#btn-new-collection").addEventListener("click", async () => {
   const name = prompt("Collection name"); if (!name) return;
-  await api("/api/collections", { json: { name } }); loadCollections();
+  await api("/api/collections", { method: "POST", json: { name } }); loadCollections();
 });
 
 // ---------- dashboard ----------
 async function loadDashboard() {
-  const s = await api("/api/stats");
+  const s = await api("/api/stats", { method: "GET" });
   const cards = [
     ["Total assets", s.total_assets], ["Storage used", fmtBytes(s.total_bytes)],
     ["Saved by dedup", fmtBytes(s.dedup_saved_bytes)], ["Tags", s.tags], ["Collections", s.collections],
@@ -258,7 +267,7 @@ $("#btn-fixity").addEventListener("click", async () => {
 
 // ---------- users ----------
 async function loadUsers() {
-  const data = await api("/api/users");
+  const data = await api("/api/users", { method: "GET" });
   $("#user-rows").innerHTML = data.users.map(u =>
     `<tr><td>${esc(u.username)}</td><td>${esc(u.email||"")}</td><td>${u.role}</td><td>${u.is_active?"Yes":"No"}</td><td>${(u.last_login||"").slice(0,16).replace("T"," ")}</td></tr>`).join("");
 }
@@ -266,12 +275,12 @@ $("#btn-new-user").addEventListener("click", async () => {
   const username = prompt("Username"); if (!username) return;
   const password = prompt("Temporary password"); if (!password) return;
   const role = prompt("Role (admin/editor/contributor/viewer)", "contributor") || "viewer";
-  await api("/api/users", { json: { username, password, role } }); loadUsers();
+  await api("/api/users", { method: "POST", json: { username, password, role } }); loadUsers();
 });
 
 // ---------- audit ----------
 async function loadAudit() {
-  const data = await api("/api/audit");
+  const data = await api("/api/audit", { method: "GET" });
   $("#audit-rows").innerHTML = data.entries.map(e =>
     `<tr><td>${(e.ts||"").slice(0,19).replace("T"," ")}</td><td>${esc(e.username||"-")}</td><td>${esc(e.action)}</td>
      <td>${esc(e.target_type||"")} ${esc((e.target_id||"").slice(0,8))}</td><td>${esc(e.detail||"")}</td><td>${esc(e.ip||"")}</td></tr>`).join("");
@@ -280,7 +289,7 @@ async function loadAudit() {
 // ---------- boot ----------
 (async function boot() {
   if (state.token) {
-    try { state.user = await api("/api/auth/me"); enterApp(); return; } catch {}
+    try { state.user = await api("/api/auth/me", { method: "GET" }); enterApp(); return; } catch {}
   }
   $("#login").classList.remove("hidden");
 })();
