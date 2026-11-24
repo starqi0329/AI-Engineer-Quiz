@@ -119,9 +119,13 @@ button, input, select { font-family: inherit; font-size: inherit; }
 .tag-name, .tag-exclude {
   background: transparent; border: none; color: inherit; font: inherit; cursor: pointer; padding: 0;
 }
-.tag-name { flex: 1; text-align: left; }
-.tag-exclude { font-size: 12px; color: var(--muted); padding: 0 8px; }
-.facet-group li.excluded .tag-exclude { color: var(--danger); font-weight: 600; }
+.tag-name { flex: 1; display: flex; align-items: center; justify-content: space-between; gap: 8px; text-align: left; min-width: 0; }
+.tag-name span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tag-exclude {
+  flex: none; margin-left: 8px; font-size: 11px; line-height: 1; color: var(--muted);
+  border: 1px solid var(--base-3); border-radius: 999px; padding: 4px 8px;
+}
+.facet-group li.excluded .tag-exclude { color: var(--danger); border-color: var(--danger); font-weight: 600; }
 
 /* ---------- content ---------- */
 .content { padding: var(--s4); overflow: auto; }

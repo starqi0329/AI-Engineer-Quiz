@@ -160,7 +160,7 @@ function renderFacets(facets) {
     const included = state.includeTags.includes(t.value);
     const excluded = state.excludeTags.includes(t.value);
     const cls = included ? "active" : excluded ? "excluded" : "";
-    return `<li class="${cls}"><button type="button" class="tag-name" data-tag="${esc(t.value)}">${esc(t.value)}</button><button type="button" class="tag-exclude" data-tag="${esc(t.value)}">Exclude</button><span class="count">${t.count}</span></li>`;
+    return `<li class="${cls}"><button type="button" class="tag-name" data-tag="${esc(t.value)}"><span>${esc(t.value)}</span><span class="count">${t.count}</span></button><button type="button" class="tag-exclude" data-tag="${esc(t.value)}">Exclude</button></li>`;
   }).join("");
   $$("#facet-media li").forEach(li => li.addEventListener("click", () => { state.media = state.media===li.dataset.media?null:li.dataset.media; loadLibrary(); }));
   $$("#facet-tags .tag-name").forEach(btn => btn.addEventListener("click", () => toggleInclude(btn.dataset.tag)));
