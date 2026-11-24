@@ -478,6 +478,34 @@ def test_export_applies_media_type():
     assert image_id
 
 
+def test_edits_show_up_in_the_next_search_and_export():
+    import csv
+
+    asset_id = _insert_titled("editbefore unique", "2016-03-03T00:00:00")
+    ingest.update_descriptive_fields(asset_id, {
+        "title": "editafter unique",
+        "description": "editdesc unique",
+    })
+    assert search.search(q="editbefore")["total"] == 0
+    found = search.search(q="editafter")
+    assert [i["id"] for i in found["items"]] == [asset_id]
+    assert search.search(q="editdesc")["total"] == 1
+    exported = list(csv.reader(io.StringIO(search.export_csv(q="editafter"))))
+    assert exported[1][1] == "editafter unique"
+    assert exported[1][2] == "editdesc unique"
+
+    ingest.add_manual_tag(asset_id, "EditLabel")
+    assert any(i["id"] == asset_id for i in search.search(include_tags=["editlabel"])["items"])
+    tagged = list(csv.reader(io.StringIO(search.export_csv(q="editafter"))))
+    assert tagged[1][5] == "editlabel"
+
+    ingest.remove_manual_tag(asset_id, "EditLabel")
+    assert search.search(include_tags=["editlabel"])["total"] == 0
+    assert search.search(q="editlabel")["total"] == 0
+    cleared = list(csv.reader(io.StringIO(search.export_csv(q="editafter"))))
+    assert cleared[1][5] == ""
+
+
 def test_version_endpoint_reports_name_and_version():
     from keepstack.app import version
     payload = version()

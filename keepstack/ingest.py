@@ -175,3 +175,59 @@ def ingest_stream(
     reindex_embedding(asset_id)
 
     return dict(get_conn().execute("SELECT * FROM assets WHERE id = ?", (asset_id,)).fetchone())
+
+
+_EDITABLE = {
+    "title", "description", "alt_text", "license", "rights_statement",
+    "credit", "usage_expiry", "retention_until", "dc_creator",
+    "dc_subject", "dc_publisher", "dc_date", "status",
+}
+
+
+def update_descriptive_fields(asset_id: int, fields: dict) -> list[str]:
+    """Persist title/description edits and rebuild search plus export indexes."""
+    sets, vals, changed = [], [], []
+    for key, value in fields.items():
+        if key in _EDITABLE:
+            sets.append(f"{key} = ?")
+            vals.append(value)
+            changed.append(key)
+    if not sets:
+        return []
+    sets.append("updated_at = ?")
+    vals.extend([now_iso(), asset_id])
+    with transaction() as conn:
+        conn.execute(f"UPDATE assets SET {', '.join(sets)} WHERE id = ?", vals)
+    reindex_fts(asset_id)
+    reindex_embedding(asset_id)
+    return changed
+
+
+def add_manual_tag(asset_id: int, name: str) -> str:
+    """Attach a tag and make the next keyword search and CSV export see it."""
+    name = (name or "").strip().lower()
+    if not name:
+        raise ValueError("Tag name required")
+    with transaction() as conn:
+        conn.execute("INSERT OR IGNORE INTO tags (name) VALUES (?)", (name,))
+        tag_id = conn.execute("SELECT id FROM tags WHERE name = ?", (name,)).fetchone()["id"]
+        conn.execute(
+            "INSERT OR IGNORE INTO asset_tags (asset_id, tag_id, source) VALUES (?,?, 'manual')",
+            (asset_id, tag_id),
+        )
+    reindex_fts(asset_id)
+    reindex_embedding(asset_id)
+    return name
+
+
+def remove_manual_tag(asset_id: int, name: str) -> None:
+    """Drop a tag and drop it from the next search and CSV export."""
+    name = (name or "").strip().lower()
+    with transaction() as conn:
+        conn.execute(
+            "DELETE FROM asset_tags WHERE asset_id = ? AND tag_id = "
+            "(SELECT id FROM tags WHERE name = ?)",
+            (asset_id, name),
+        )
+    reindex_fts(asset_id)
+    reindex_embedding(asset_id)

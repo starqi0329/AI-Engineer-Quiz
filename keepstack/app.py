@@ -253,23 +253,10 @@ def asset_detail(uuid: str, user: dict = Depends(require_user)):
 def update_asset(uuid: str, request: Request, body: dict = Body(...),
                  user: dict = Depends(require_role("contributor"))):
     a = _get_asset_or_404(uuid)
-    editable = {"title", "description", "alt_text", "license", "rights_statement",
-                "credit", "usage_expiry", "retention_until", "dc_creator",
-                "dc_subject", "dc_publisher", "dc_date", "status"}
-    sets, vals = [], []
-    for k, v in body.items():
-        if k in editable:
-            sets.append(f"{k} = ?")
-            vals.append(v)
-    if sets:
-        sets.append("updated_at = ?")
-        vals.extend([now_iso(), a["id"]])
-        with transaction() as conn:
-            conn.execute(f"UPDATE assets SET {', '.join(sets)} WHERE id = ?", vals)
-        ingest.reindex_fts(a["id"])
-        ingest.reindex_embedding(a["id"])
+    changed = ingest.update_descriptive_fields(a["id"], body)
+    if changed:
         log("asset.update", user=user, target_type="asset", target_id=uuid,
-            detail=",".join(body.keys()), ip=client_ip(request))
+            detail=",".join(changed), ip=client_ip(request))
     return asset_detail(uuid, user)
 
 
@@ -322,16 +309,10 @@ def asset_similar(uuid: str, user: dict = Depends(require_user)):
 def add_tag(uuid: str, request: Request, body: dict = Body(...),
             user: dict = Depends(require_role("contributor"))):
     a = _get_asset_or_404(uuid)
-    name = (body.get("name") or "").strip().lower()
-    if not name:
+    try:
+        name = ingest.add_manual_tag(a["id"], body.get("name") or "")
+    except ValueError:
         raise HTTPException(400, "Tag name required")
-    with transaction() as conn:
-        conn.execute("INSERT OR IGNORE INTO tags (name) VALUES (?)", (name,))
-        tid = conn.execute("SELECT id FROM tags WHERE name = ?", (name,)).fetchone()["id"]
-        conn.execute("INSERT OR IGNORE INTO asset_tags (asset_id, tag_id, source) VALUES (?,?,?)",
-                     (a["id"], tid, "manual"))
-    ingest.reindex_fts(a["id"])
-    ingest.reindex_embedding(a["id"])
     log("tag.add", user=user, target_type="asset", target_id=uuid, detail=name)
     return {"ok": True}
 
@@ -339,11 +320,7 @@ def add_tag(uuid: str, request: Request, body: dict = Body(...),
 @app.delete("/api/assets/{uuid}/tags/{name}")
 def remove_tag(uuid: str, name: str, user: dict = Depends(require_role("contributor"))):
     a = _get_asset_or_404(uuid)
-    with transaction() as conn:
-        conn.execute(
-            "DELETE FROM asset_tags WHERE asset_id = ? AND tag_id = "
-            "(SELECT id FROM tags WHERE name = ?)", (a["id"], name.lower()))
-    ingest.reindex_fts(a["id"])
+    ingest.remove_manual_tag(a["id"], name)
     return {"ok": True}
 
 

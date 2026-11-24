@@ -300,18 +300,34 @@ async function openAsset(uuid) {
     $("#d-save")?.addEventListener("click", async () => {
       const body = {};
       ["title","description","alt_text","dc_creator","rights_statement","retention_until"].forEach(f => { const el = $("#e-"+f); if (el) body[f] = el.value; });
-      await api("/api/assets/"+uuid, { method: "PATCH", json: body });
-      toast("Saved"); openAsset(uuid); loadLibrary();
+      try {
+        await api("/api/assets/"+uuid, { method: "PATCH", json: body });
+        toast("Saved");
+        await openAsset(uuid);
+        loadLibrary({ keepPage: true });
+      } catch (err) {
+        toast(err.message || "Save failed", "err");
+      }
     });
     $("#tag-add")?.addEventListener("keydown", async (e) => {
       if (e.key === "Enter" && e.target.value.trim()) {
-        await api("/api/assets/"+uuid+"/tags", { method: "POST", json: { name: e.target.value.trim() } });
-        openAsset(uuid);
+        try {
+          await api("/api/assets/"+uuid+"/tags", { method: "POST", json: { name: e.target.value.trim() } });
+          await openAsset(uuid);
+          loadLibrary({ keepPage: true });
+        } catch (err) {
+          toast(err.message || "Could not add tag", "err");
+        }
       }
     });
     $$("#tag-row .rm").forEach(rm => rm.addEventListener("click", async () => {
-      await api("/api/assets/"+uuid+"/tags/"+encodeURIComponent(rm.dataset.tag), { method: "DELETE" });
-      openAsset(uuid);
+      try {
+        await api("/api/assets/"+uuid+"/tags/"+encodeURIComponent(rm.dataset.tag), { method: "DELETE" });
+        await openAsset(uuid);
+        loadLibrary({ keepPage: true });
+      } catch (err) {
+        toast(err.message || "Could not remove tag", "err");
+      }
     }));
     $("#d-share")?.addEventListener("click", async () => {
       const r = await api("/api/shares", { method: "POST", json: { target_type: "asset", target_id: a.id, permission: "download" } });
