@@ -96,7 +96,10 @@ def search(
         )
         params.extend(exclude)
     if collection_id:
-        join += " JOIN collection_assets ca ON ca.asset_id = a.id AND ca.collection_id = ?"
+        where.append(
+            """EXISTS (SELECT 1 FROM collection_assets ca
+                        WHERE ca.asset_id = a.id AND ca.collection_id = ?)"""
+        )
         params.append(collection_id)
 
     where_sql = " AND ".join(where)
