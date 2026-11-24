@@ -3,7 +3,7 @@
 Three complementary modes over one catalog:
 
   * keyword  - FTS5 full-text across title, description, tags, metadata
-  * filter   - faceted structured filters (media type, tag, status, dates)
+  * filter   - faceted structured filters (media type, include/exclude tags, status, dates)
   * semantic - embedding cosine ranking ("natural language" / more-like-this)
 
 Facet counts are returned alongside results so the UI can render a live,
@@ -30,11 +30,23 @@ def _fts_query(q: str) -> str:
     return " ".join(f'"{t}"*' for t in terms)
 
 
+def _tag_names(tags: Optional[list[str]]) -> list[str]:
+    """Normalize tag names the same way they are stored: trimmed and lowercased."""
+    seen: list[str] = []
+    for raw in tags or []:
+        name = (raw or "").strip().lower()
+        if name and name not in seen:
+            seen.append(name)
+    return seen
+
+
 def search(
     *,
     q: str = "",
     media_type: Optional[str] = None,
     tag: Optional[str] = None,
+    include_tags: Optional[list[str]] = None,
+    exclude_tags: Optional[list[str]] = None,
     collection_id: Optional[int] = None,
     status: str = "active",
     sort: str = "newest",
@@ -43,6 +55,12 @@ def search(
     offset: int = 0,
 ) -> dict:
     conn = get_conn()
+    include = _tag_names([*(include_tags or []), *([tag] if tag else [])])
+    exclude = _tag_names(exclude_tags)
+
+    # One tag cannot be both required and excluded.
+    if set(include) & set(exclude):
+        return {"total": 0, "items": [], "facets": _facets(status), "mode": mode}
 
     # Semantic mode ranks the candidate pool by embedding similarity.
     if mode == "semantic" and q.strip():
@@ -59,10 +77,24 @@ def search(
     if media_type:
         where.append("a.media_type = ?")
         params.append(media_type)
-    if tag:
-        join += (" JOIN asset_tags at ON at.asset_id = a.id"
-                 " JOIN tags t ON t.id = at.tag_id AND t.name = ?")
-        params.append(tag.lower())
+    if include:
+        marks = ", ".join("?" * len(include))
+        where.append(
+            f"""(SELECT COUNT(DISTINCT t.name)
+                 FROM asset_tags at
+                 JOIN tags t ON t.id = at.tag_id
+                 WHERE at.asset_id = a.id AND t.name IN ({marks})) = ?"""
+        )
+        params.extend([*include, len(include)])
+    if exclude:
+        marks = ", ".join("?" * len(exclude))
+        where.append(
+            f"""NOT EXISTS (
+                 SELECT 1 FROM asset_tags at
+                 JOIN tags t ON t.id = at.tag_id
+                 WHERE at.asset_id = a.id AND t.name IN ({marks}))"""
+        )
+        params.extend(exclude)
     if collection_id:
         join += " JOIN collection_assets ca ON ca.asset_id = a.id AND ca.collection_id = ?"
         params.append(collection_id)
