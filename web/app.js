@@ -2,7 +2,8 @@
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const state = { token: localStorage.getItem("keepstack_token"), user: null,
-  q: "", mode: "keyword", media: null, tag: null, sort: "newest", collection: null };
+  q: "", mode: "keyword", media: null, includeTags: [], excludeTags: [],
+  sort: "newest", collection: null, collectionName: null };
 
 // ---------- API helper ----------
 async function api(path, opts = {}) {
@@ -70,19 +71,72 @@ let searchTimer;
 $("#search").addEventListener("input", (e) => { state.q = e.target.value; clearTimeout(searchTimer); searchTimer = setTimeout(loadLibrary, 250); });
 $("#search-mode").addEventListener("change", (e) => { state.mode = e.target.value; loadLibrary(); });
 $("#sort").addEventListener("change", (e) => { state.sort = e.target.value; loadLibrary(); });
-$("#active-filter").addEventListener("click", () => { state.media = null; state.tag = null; state.collection = null; loadLibrary(); });
+$("#clear-filters")?.addEventListener("click", () => {
+  state.q = ""; $("#search").value = "";
+  state.media = null; state.includeTags = []; state.excludeTags = [];
+  state.collection = null; state.collectionName = null;
+  loadLibrary();
+});
 
+let librarySeq = 0;
 async function loadLibrary() {
+  const seq = ++librarySeq;
   const p = new URLSearchParams({ q: state.q, sort: state.sort, mode: state.mode, limit: "120" });
   if (state.media) p.set("media_type", state.media);
-  if (state.tag) p.set("tag", state.tag);
+  state.includeTags.forEach(t => p.append("include_tags", t));
+  state.excludeTags.forEach(t => p.append("exclude_tags", t));
   if (state.collection) p.set("collection_id", state.collection);
-  const data = await api("/api/assets?" + p.toString(), { method: "GET" });
+  let data;
+  try {
+    data = await api("/api/assets?" + p.toString(), { method: "GET" });
+  } catch (err) {
+    if (seq !== librarySeq) return;
+    toast(err.message || "Search failed", "err");
+    return;
+  }
+  if (seq !== librarySeq) return;
   renderFacets(data.facets);
   renderGrid(data.items, data.total);
-  const filt = state.media || (state.tag ? "#" + state.tag : null) || (state.collection ? "collection" : null);
-  $("#active-filter").classList.toggle("hidden", !filt);
-  if (filt) $("#active-filter").textContent = filt;
+  renderActiveFilters();
+}
+
+function renderActiveFilters() {
+  const chips = [];
+  if (state.q) chips.push({ kind: "q", label: `"${state.q}"` });
+  if (state.media) chips.push({ kind: "media", label: state.media });
+  if (state.collection) chips.push({ kind: "collection", label: state.collectionName || "collection" });
+  state.includeTags.forEach(t => chips.push({ kind: "include", value: t, label: t }));
+  state.excludeTags.forEach(t => chips.push({ kind: "exclude", value: t, label: "−" + t }));
+  $("#active-filters").innerHTML = chips.map((c, i) =>
+    `<button type="button" class="chip${c.kind === "exclude" ? " chip-exclude" : ""}" data-i="${i}">${esc(c.label)}</button>`).join("");
+  $("#clear-filters").classList.toggle("hidden", chips.length === 0);
+  $$("#active-filters .chip").forEach(btn => btn.addEventListener("click", () => {
+    const c = chips[Number(btn.dataset.i)];
+    if (c.kind === "q") { state.q = ""; $("#search").value = ""; }
+    else if (c.kind === "media") state.media = null;
+    else if (c.kind === "collection") { state.collection = null; state.collectionName = null; }
+    else if (c.kind === "include") state.includeTags = state.includeTags.filter(t => t !== c.value);
+    else state.excludeTags = state.excludeTags.filter(t => t !== c.value);
+    loadLibrary();
+  }));
+}
+
+function toggleInclude(name) {
+  if (state.includeTags.includes(name)) state.includeTags = state.includeTags.filter(t => t !== name);
+  else {
+    state.excludeTags = state.excludeTags.filter(t => t !== name);
+    state.includeTags = [...state.includeTags, name];
+  }
+  loadLibrary();
+}
+
+function toggleExclude(name) {
+  if (state.excludeTags.includes(name)) state.excludeTags = state.excludeTags.filter(t => t !== name);
+  else {
+    state.includeTags = state.includeTags.filter(t => t !== name);
+    state.excludeTags = [...state.excludeTags, name];
+  }
+  loadLibrary();
 }
 
 function renderGrid(items, total) {
@@ -102,10 +156,15 @@ function renderGrid(items, total) {
 function renderFacets(facets) {
   $("#facet-media").innerHTML = (facets.media_types || []).map(m =>
     `<li class="${state.media===m.value?'active':''}" data-media="${m.value}"><span>${m.value}</span><span class="count">${m.count}</span></li>`).join("");
-  $("#facet-tags").innerHTML = (facets.tags || []).slice(0, 18).map(t =>
-    `<li class="${state.tag===t.value?'active':''}" data-tag="${esc(t.value)}"><span>${esc(t.value)}</span><span class="count">${t.count}</span></li>`).join("");
+  $("#facet-tags").innerHTML = (facets.tags || []).slice(0, 18).map(t => {
+    const included = state.includeTags.includes(t.value);
+    const excluded = state.excludeTags.includes(t.value);
+    const cls = included ? "active" : excluded ? "excluded" : "";
+    return `<li class="${cls}"><button type="button" class="tag-name" data-tag="${esc(t.value)}">${esc(t.value)}</button><button type="button" class="tag-exclude" data-tag="${esc(t.value)}">Exclude</button><span class="count">${t.count}</span></li>`;
+  }).join("");
   $$("#facet-media li").forEach(li => li.addEventListener("click", () => { state.media = state.media===li.dataset.media?null:li.dataset.media; loadLibrary(); }));
-  $$("#facet-tags li").forEach(li => li.addEventListener("click", () => { state.tag = state.tag===li.dataset.tag?null:li.dataset.tag; loadLibrary(); }));
+  $$("#facet-tags .tag-name").forEach(btn => btn.addEventListener("click", () => toggleInclude(btn.dataset.tag)));
+  $$("#facet-tags .tag-exclude").forEach(btn => btn.addEventListener("click", () => toggleExclude(btn.dataset.tag)));
 }
 
 // ---------- asset detail drawer ----------
@@ -237,7 +296,9 @@ async function loadCollections() {
     `<div class="collection-card" data-id="${c.id}"><span class="n">${esc(c.name)}</span><span class="muted">${c.asset_count} assets</span><span class="muted">${esc(c.description||"")}</span></div>`).join("")
     || '<p class="muted">No collections yet.</p>';
   $$("#collection-list .collection-card").forEach(card => card.addEventListener("click", () => {
-    state.collection = card.dataset.id; state.media = null; state.tag = null;
+    state.collection = card.dataset.id;
+    state.collectionName = card.querySelector(".n").textContent;
+    state.media = null; state.includeTags = []; state.excludeTags = [];
     $$(".nav-item").forEach(b => b.classList.remove("active"));
     $('.nav-item[data-view="library"]').classList.add("active");
     $$(".view").forEach(v => v.classList.add("hidden")); $("#view-library").classList.remove("hidden");
