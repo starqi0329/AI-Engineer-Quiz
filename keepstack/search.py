@@ -11,10 +11,14 @@ drill-down sidebar.
 """
 from __future__ import annotations
 
+import csv
+import io
 from typing import Optional
 
 from . import ai
 from .db import get_conn
+
+CSV_COLUMNS = ("uuid", "title", "description", "filename", "media_type", "tags", "created_at")
 
 SORTS = {
     "newest": "a.created_at DESC",
@@ -72,33 +76,26 @@ def _tag_names(tags: Optional[list[str]]) -> list[str]:
     return seen
 
 
-def search(
+def _keyword_match(
     *,
-    q: str = "",
-    media_type: Optional[str] = None,
-    tag: Optional[str] = None,
-    include_tags: Optional[list[str]] = None,
-    exclude_tags: Optional[list[str]] = None,
-    collection_id: Optional[int] = None,
-    status: str = "active",
-    sort: str = "newest",
-    mode: str = "keyword",
-    limit: int = 60,
-    offset: int = 0,
-) -> dict:
-    limit, offset = _page_bounds(limit, offset)
-    conn = get_conn()
+    q: str,
+    media_type: Optional[str],
+    tag: Optional[str],
+    include_tags: Optional[list[str]],
+    exclude_tags: Optional[list[str]],
+    collection_id: Optional[int],
+    status: str,
+    sort: str,
+):
+    """Shared filter for the list and the CSV export.
+
+    Returns ``(join, where_sql, params, order)``, or ``None`` when a tag is
+    both required and excluded (the result set is empty).
+    """
     include = _tag_names([*(include_tags or []), *([tag] if tag else [])])
     exclude = _tag_names(exclude_tags)
-
-    # One tag cannot be both required and excluded.
     if set(include) & set(exclude):
-        return {"total": 0, "items": [], "facets": _facets(status), "mode": mode,
-                "limit": limit, "offset": offset}
-
-    # Semantic mode ranks the candidate pool by embedding similarity.
-    if mode == "semantic" and q.strip():
-        return _semantic_search(q, media_type, status, limit, offset)
+        return None
 
     where = ["a.status = ?"]
     params: list = [status]
@@ -135,14 +132,59 @@ def search(
                         WHERE ca.asset_id = a.id AND ca.collection_id = ?)"""
         )
         params.append(collection_id)
+    return join, " AND ".join(where), params, _order_clause(sort)
 
-    where_sql = " AND ".join(where)
-    order = _order_clause(sort)
 
+def _tag_labels(conn, asset_ids: list[int]) -> dict[int, str]:
+    """Tags for each asset, sorted by name and joined with ``'; '``."""
+    if not asset_ids:
+        return {}
+    marks = ", ".join("?" * len(asset_ids))
+    found: dict[int, list[str]] = {}
+    rows = conn.execute(
+        f"""SELECT at.asset_id, t.name
+            FROM asset_tags at JOIN tags t ON t.id = at.tag_id
+            WHERE at.asset_id IN ({marks})
+            ORDER BY t.name""",
+        asset_ids,
+    ).fetchall()
+    for row in rows:
+        found.setdefault(row["asset_id"], []).append(row["name"])
+    return {asset_id: "; ".join(names) for asset_id, names in found.items()}
+
+
+def search(
+    *,
+    q: str = "",
+    media_type: Optional[str] = None,
+    tag: Optional[str] = None,
+    include_tags: Optional[list[str]] = None,
+    exclude_tags: Optional[list[str]] = None,
+    collection_id: Optional[int] = None,
+    status: str = "active",
+    sort: str = "newest",
+    mode: str = "keyword",
+    limit: int = 60,
+    offset: int = 0,
+) -> dict:
+    limit, offset = _page_bounds(limit, offset)
+    conn = get_conn()
+    matched = _keyword_match(
+        q=q, media_type=media_type, tag=tag, include_tags=include_tags,
+        exclude_tags=exclude_tags, collection_id=collection_id, status=status, sort=sort,
+    )
+    if matched is None:
+        return {"total": 0, "items": [], "facets": _facets(status), "mode": mode,
+                "limit": limit, "offset": offset}
+
+    # Semantic mode ranks the candidate pool by embedding similarity.
+    if mode == "semantic" and q.strip():
+        return _semantic_search(q, media_type, status, limit, offset)
+
+    join, where_sql, params, order = matched
     total = conn.execute(
         f"SELECT COUNT(*) AS c FROM assets a{join} WHERE {where_sql}", params
     ).fetchone()["c"]
-
     rows = conn.execute(
         f"""SELECT a.* FROM assets a{join} WHERE {where_sql}
             ORDER BY {order} LIMIT ? OFFSET ?""",
@@ -157,6 +199,63 @@ def search(
         "limit": limit,
         "offset": offset,
     }
+
+
+def export_csv(
+    *,
+    q: str = "",
+    media_type: Optional[str] = None,
+    tag: Optional[str] = None,
+    include_tags: Optional[list[str]] = None,
+    exclude_tags: Optional[list[str]] = None,
+    collection_id: Optional[int] = None,
+    status: str = "active",
+    sort: str = "newest",
+    mode: str = "keyword",
+) -> str:
+    """CSV of every match, in the same order as ``search``, ignoring pagination.
+
+    Multiple tags are sorted by name and joined with ``'; '``.
+    """
+    conn = get_conn()
+    matched = _keyword_match(
+        q=q, media_type=media_type, tag=tag, include_tags=include_tags,
+        exclude_tags=exclude_tags, collection_id=collection_id, status=status, sort=sort,
+    )
+    buf = io.StringIO()
+    writer = csv.writer(buf, lineterminator="\n")
+    writer.writerow(CSV_COLUMNS)
+    if matched is None:
+        return buf.getvalue()
+
+    if mode == "semantic" and q.strip():
+        found = _semantic_search(q, media_type, status, limit=10**9, offset=0)
+        ids = [item["id"] for item in found["items"]]
+        by_id = {}
+        if ids:
+            marks = ", ".join("?" * len(ids))
+            for row in conn.execute(f"SELECT * FROM assets WHERE id IN ({marks})", ids):
+                by_id[row["id"]] = row
+        rows = [by_id[asset_id] for asset_id in ids if asset_id in by_id]
+    else:
+        join, where_sql, params, order = matched
+        rows = conn.execute(
+            f"SELECT a.* FROM assets a{join} WHERE {where_sql} ORDER BY {order}",
+            params,
+        ).fetchall()
+
+    labels = _tag_labels(conn, [row["id"] for row in rows])
+    for row in rows:
+        writer.writerow([
+            row["uuid"] or "",
+            row["title"] or "",
+            row["description"] or "",
+            row["filename"] or "",
+            row["media_type"] or "",
+            labels.get(row["id"], ""),
+            row["created_at"] or "",
+        ])
+    return buf.getvalue()
 
 
 def _semantic_search(q, media_type, status, limit, offset) -> dict:

@@ -194,6 +194,31 @@ def list_assets(
                          mode=mode, limit=limit, offset=offset)
 
 
+@app.get("/api/assets/export")
+def export_assets(
+    q: str = "",
+    media_type: Optional[str] = None,
+    tag: Optional[str] = None,
+    include_tags: list[str] = Query(default=[]),
+    exclude_tags: list[str] = Query(default=[]),
+    collection_id: Optional[int] = None,
+    status: str = "active",
+    sort: str = "newest",
+    mode: str = "keyword",
+    user: dict = Depends(require_user),
+):
+    text = search.export_csv(
+        q=q, media_type=media_type, tag=tag, include_tags=include_tags,
+        exclude_tags=exclude_tags, collection_id=collection_id, status=status,
+        sort=sort, mode=mode,
+    )
+    return Response(
+        content=text.encode("utf-8-sig"),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="keepstack-assets.csv"'},
+    )
+
+
 def _get_asset_or_404(uuid: str) -> dict:
     row = get_conn().execute("SELECT * FROM assets WHERE uuid = ?", (uuid,)).fetchone()
     if not row:

@@ -407,6 +407,77 @@ def test_same_created_at_pages_do_not_overlap_or_skip():
     assert past["total"] == 5
 
 
+def test_export_matches_every_page_in_order():
+    import csv
+    ids = []
+    offset = 0
+    total = None
+    while total is None or offset < total:
+        res = search.search(q="tiepage", sort="oldest", limit=2, offset=offset)
+        total = res["total"]
+        ids.extend(i["uuid"] for i in res["items"])
+        if not res["items"]:
+            break
+        offset += 2
+    text = search.export_csv(q="tiepage", sort="oldest")
+    rows = list(csv.reader(io.StringIO(text)))
+    assert rows[0] == ["uuid", "title", "description", "filename", "media_type", "tags", "created_at"]
+    assert [row[0] for row in rows[1:]] == ids
+    assert len(rows) == total + 1
+
+
+def test_export_quotes_special_text_and_joins_tags():
+    import csv
+    asset_id = _insert_titled('港, "湾"\n图', "2018-01-01T00:00:00")
+    conn = get_conn()
+    conn.execute("UPDATE assets SET description = ? WHERE id = ?", ("line1\nline2, \"q\"", asset_id))
+    for name in ("zeta", "alpha"):
+        conn.execute("INSERT OR IGNORE INTO tags (name) VALUES (?)", (name,))
+        tid = conn.execute("SELECT id FROM tags WHERE name = ?", (name,)).fetchone()["id"]
+        conn.execute(
+            "INSERT OR IGNORE INTO asset_tags (asset_id, tag_id, source) VALUES (?,?, 'manual')",
+            (asset_id, tid),
+        )
+    conn.commit()
+    ingest.reindex_fts(asset_id)
+    text = search.export_csv(q="湾", sort="oldest")
+    rows = list(csv.reader(io.StringIO(text)))
+    match = [row for row in rows[1:] if row[1] == '港, "湾"\n图']
+    assert len(match) == 1
+    assert match[0][2] == 'line1\nline2, "q"'
+    assert match[0][5] == "alpha; zeta"
+
+
+def test_export_header_only_when_nothing_matches():
+    import csv
+    text = search.export_csv(q="export-matches-nothing-xyz")
+    rows = list(csv.reader(io.StringIO(text)))
+    assert rows == [["uuid", "title", "description", "filename", "media_type", "tags", "created_at"]]
+
+
+def test_export_applies_media_type():
+    import csv
+    conn = get_conn()
+    uid = __import__("uuid").uuid4().hex
+    conn.execute(
+        """INSERT INTO assets (uuid, sha256, filename, media_type, title, status,
+           storage_key, created_at, updated_at)
+           VALUES (?,?,?,?,?, 'active', ?, ?, ?)""",
+        (uid, uid, "notes.txt", "document", "mediatoken doc", uid, "2017-01-01T00:00:00", "2017-01-01T00:00:00"),
+    )
+    conn.commit()
+    doc_id = conn.execute("SELECT id FROM assets WHERE uuid = ?", (uid,)).fetchone()["id"]
+    ingest.reindex_fts(doc_id)
+    image_id = _insert_titled("mediatoken image", "2017-02-01T00:00:00")
+    text = search.export_csv(q="mediatoken", media_type="image", sort="oldest")
+    rows = list(csv.reader(io.StringIO(text)))
+    titles = [row[1] for row in rows[1:]]
+    assert "mediatoken image" in titles
+    assert "mediatoken doc" not in titles
+    assert all(row[4] == "image" for row in rows[1:])
+    assert image_id
+
+
 def test_version_endpoint_reports_name_and_version():
     from keepstack.app import version
     payload = version()

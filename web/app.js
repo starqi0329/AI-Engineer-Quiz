@@ -88,18 +88,43 @@ $("#page-next").addEventListener("click", () => {
   loadLibrary({ keepPage: true });
 });
 
-let librarySeq = 0;
-async function loadLibrary({ keepPage = false } = {}) {
-  if (!keepPage) state.offset = 0;
-  const seq = ++librarySeq;
-  const p = new URLSearchParams({
-    q: state.q, sort: state.sort, mode: state.mode,
-    limit: String(PAGE_SIZE), offset: String(state.offset),
-  });
+function libraryParams() {
+  const p = new URLSearchParams({ q: state.q, sort: state.sort, mode: state.mode });
   if (state.media) p.set("media_type", state.media);
   state.includeTags.forEach(t => p.append("include_tags", t));
   state.excludeTags.forEach(t => p.append("exclude_tags", t));
   if (state.collection) p.set("collection_id", state.collection);
+  return p;
+}
+
+$("#btn-export").addEventListener("click", async () => {
+  try {
+    const headers = {};
+    if (state.token) headers["Authorization"] = "Bearer " + state.token;
+    const res = await fetch("/api/assets/export?" + libraryParams().toString(), { headers });
+    if (res.status === 401) { logout(); throw new Error("unauthorised"); }
+    if (!res.ok) throw new Error((await res.text()) || res.statusText);
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "keepstack-assets.csv";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  } catch (err) {
+    toast(err.message || "Export failed", "err");
+  }
+});
+
+let librarySeq = 0;
+async function loadLibrary({ keepPage = false } = {}) {
+  if (!keepPage) state.offset = 0;
+  const seq = ++librarySeq;
+  const p = libraryParams();
+  p.set("limit", String(PAGE_SIZE));
+  p.set("offset", String(state.offset));
   let data;
   try {
     data = await api("/api/assets?" + p.toString(), { method: "GET" });
