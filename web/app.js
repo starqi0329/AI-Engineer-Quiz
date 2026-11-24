@@ -1,9 +1,10 @@
 /* Keepstack single-page client. Vanilla JS, no build step. */
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
+const PAGE_SIZE = 24;
 const state = { token: localStorage.getItem("keepstack_token"), user: null,
   q: "", mode: "keyword", media: null, includeTags: [], excludeTags: [],
-  sort: "newest", collection: null, collectionName: null };
+  sort: "newest", collection: null, collectionName: null, offset: 0 };
 
 // ---------- API helper ----------
 async function api(path, opts = {}) {
@@ -68,7 +69,7 @@ $$(".nav-item").forEach(btn => btn.addEventListener("click", () => {
 
 // ---------- library / search ----------
 let searchTimer;
-$("#search").addEventListener("input", (e) => { state.q = e.target.value; clearTimeout(searchTimer); searchTimer = setTimeout(loadLibrary, 250); });
+$("#search").addEventListener("input", (e) => { state.q = e.target.value; clearTimeout(searchTimer); searchTimer = setTimeout(() => loadLibrary(), 250); });
 $("#search-mode").addEventListener("change", (e) => { state.mode = e.target.value; loadLibrary(); });
 $("#sort").addEventListener("change", (e) => { state.sort = e.target.value; loadLibrary(); });
 $("#clear-filters")?.addEventListener("click", () => {
@@ -77,11 +78,24 @@ $("#clear-filters")?.addEventListener("click", () => {
   state.collection = null; state.collectionName = null;
   loadLibrary();
 });
+$("#page-prev").addEventListener("click", () => {
+  if (state.offset <= 0) return;
+  state.offset = Math.max(0, state.offset - PAGE_SIZE);
+  loadLibrary({ keepPage: true });
+});
+$("#page-next").addEventListener("click", () => {
+  state.offset += PAGE_SIZE;
+  loadLibrary({ keepPage: true });
+});
 
 let librarySeq = 0;
-async function loadLibrary() {
+async function loadLibrary({ keepPage = false } = {}) {
+  if (!keepPage) state.offset = 0;
   const seq = ++librarySeq;
-  const p = new URLSearchParams({ q: state.q, sort: state.sort, mode: state.mode, limit: "120" });
+  const p = new URLSearchParams({
+    q: state.q, sort: state.sort, mode: state.mode,
+    limit: String(PAGE_SIZE), offset: String(state.offset),
+  });
   if (state.media) p.set("media_type", state.media);
   state.includeTags.forEach(t => p.append("include_tags", t));
   state.excludeTags.forEach(t => p.append("exclude_tags", t));
@@ -92,12 +106,36 @@ async function loadLibrary() {
   } catch (err) {
     if (seq !== librarySeq) return;
     toast(err.message || "Search failed", "err");
+    $("#empty").textContent = "Could not load assets.";
+    $("#empty").classList.remove("hidden");
+    $("#pager").classList.add("hidden");
     return;
   }
   if (seq !== librarySeq) return;
+  if (state.offset > 0 && data.items.length === 0 && data.total > 0) {
+    const last = Math.floor((data.total - 1) / PAGE_SIZE) * PAGE_SIZE;
+    if (last !== state.offset) {
+      state.offset = last;
+      return loadLibrary({ keepPage: true });
+    }
+  }
   renderFacets(data.facets);
   renderGrid(data.items, data.total);
+  renderPager(data.total);
   renderActiveFilters();
+}
+
+function renderPager(total) {
+  const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const page = Math.floor(state.offset / PAGE_SIZE) + 1;
+  const start = total === 0 ? 0 : state.offset + 1;
+  const end = Math.min(state.offset + PAGE_SIZE, total);
+  $("#page-status").textContent = total === 0
+    ? "0 matches"
+    : `${start}–${end} of ${total} · page ${page} / ${pages}`;
+  $("#page-prev").disabled = state.offset <= 0;
+  $("#page-next").disabled = state.offset + PAGE_SIZE >= total;
+  $("#pager").classList.remove("hidden");
 }
 
 function renderActiveFilters() {
@@ -141,6 +179,8 @@ function toggleExclude(name) {
 
 function renderGrid(items, total) {
   $("#result-title").textContent = state.q ? `Results (${total})` : `Library (${total})`;
+  const filtered = state.q || state.media || state.collection || state.includeTags.length || state.excludeTags.length;
+  $("#empty").textContent = filtered ? "No matching assets." : "No assets yet. Click Upload to get started.";
   $("#empty").classList.toggle("hidden", items.length > 0);
   $("#grid").innerHTML = items.map(a => `
     <div class="card" data-uuid="${a.uuid}">

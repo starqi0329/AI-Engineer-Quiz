@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Keepstack - Digital Asset Management</title>
-  <link rel="stylesheet" href="/styles.css?v=2">
+  <link rel="stylesheet" href="/styles.css?v=4">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%234d68d6'/><text x='16' y='23' font-size='20' text-anchor='middle' fill='white' font-family='sans-serif' font-weight='700'>K</text></svg>">
 </head>
 <body>
@@ -75,7 +75,7 @@
             <div class="view-controls">
               <div id="active-filters" class="active-filters"></div>
               <button id="clear-filters" class="btn btn-ghost hidden" type="button">Clear</button>
-              <select id="sort">
+              <select id="sort" title="Sort by created time">
                 <option value="newest">Newest</option>
                 <option value="oldest">Oldest</option>
                 <option value="name">Name</option>
@@ -85,6 +85,11 @@
           </div>
           <div id="grid" class="grid"></div>
           <div id="empty" class="empty hidden">No assets yet. Click Upload to get started.</div>
+          <div id="pager" class="pager hidden">
+            <button id="page-prev" class="btn" type="button">Previous</button>
+            <span id="page-status" class="muted"></span>
+            <button id="page-next" class="btn" type="button">Next</button>
+          </div>
         </div>
 
         <div id="view-collections" class="view hidden">
@@ -149,6 +154,6 @@
 
   <div id="toast" class="toast hidden"></div>
 
-  <script src="/app.js?v=2"></script>
+  <script src="/app.js?v=4"></script>
 </body>
 </html>

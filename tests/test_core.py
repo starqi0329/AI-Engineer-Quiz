@@ -364,6 +364,49 @@ def test_ocr_makes_image_text_searchable():
     assert any(i["uuid"] == a["uuid"] for i in res["items"])
 
 
+def _insert_titled(title: str, created_at: str) -> int:
+    import uuid
+    conn = get_conn()
+    uid = str(uuid.uuid4())
+    cur = conn.execute(
+        """INSERT INTO assets (uuid, sha256, filename, media_type, title, status,
+           storage_key, created_at, updated_at)
+           VALUES (?,?,?,?,?, 'active', ?, ?, ?)""",
+        (uid, uid, f"{title}.jpg", "image", title, uid, created_at, created_at),
+    )
+    conn.commit()
+    asset_id = cur.lastrowid
+    ingest.reindex_fts(asset_id)
+    return asset_id
+
+
+def test_keyword_search_obeys_created_at_sort():
+    early = _insert_titled("sorttoken early", "2020-01-01T00:00:00")
+    late = _insert_titled("sorttoken late", "2024-06-01T00:00:00")
+    newest = search.search(q="sorttoken", sort="newest", limit=10)
+    oldest = search.search(q="sorttoken", sort="oldest", limit=10)
+    newest_ids = [i["id"] for i in newest["items"]]
+    oldest_ids = [i["id"] for i in oldest["items"]]
+    assert newest_ids.index(late) < newest_ids.index(early)
+    assert oldest_ids.index(early) < oldest_ids.index(late)
+
+
+def test_same_created_at_pages_do_not_overlap_or_skip():
+    stamp = "2019-05-05T12:00:00"
+    ids = [_insert_titled(f"tiepage {n}", stamp) for n in range(5)]
+    pages = []
+    for offset in (0, 2, 4):
+        res = search.search(q="tiepage", sort="oldest", limit=2, offset=offset)
+        pages.append([i["id"] for i in res["items"]])
+        assert res["total"] == 5
+    flat = [i for page in pages for i in page]
+    assert len(flat) == len(set(flat)) == 5
+    assert flat == sorted(ids)
+    past = search.search(q="tiepage", sort="oldest", limit=2, offset=50)
+    assert past["items"] == []
+    assert past["total"] == 5
+
+
 def test_version_endpoint_reports_name_and_version():
     from keepstack.app import version
     payload = version()

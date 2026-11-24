@@ -22,6 +22,38 @@ SORTS = {
     "name": "a.title ASC",
     "largest": "a.size DESC",
 }
+# id is unique, so a tie on created_at (or title/size) cannot reshuffle between pages.
+_TIES = {
+    "newest": "a.id DESC",
+    "oldest": "a.id ASC",
+    "name": "a.id ASC",
+    "largest": "a.id DESC",
+}
+PAGE_LIMIT_MAX = 100
+
+
+def _order_clause(sort: str) -> str:
+    primary = SORTS.get(sort, SORTS["newest"])
+    tie = _TIES.get(sort, _TIES["newest"])
+    return f"{primary}, {tie}"
+
+
+def _page_bounds(limit: int, offset: int) -> tuple[int, int]:
+    try:
+        limit = int(limit)
+    except (TypeError, ValueError):
+        limit = 24
+    try:
+        offset = int(offset)
+    except (TypeError, ValueError):
+        offset = 0
+    if limit < 1:
+        limit = 1
+    if limit > PAGE_LIMIT_MAX:
+        limit = PAGE_LIMIT_MAX
+    if offset < 0:
+        offset = 0
+    return limit, offset
 
 
 def _fts_query(q: str) -> str:
@@ -54,13 +86,15 @@ def search(
     limit: int = 60,
     offset: int = 0,
 ) -> dict:
+    limit, offset = _page_bounds(limit, offset)
     conn = get_conn()
     include = _tag_names([*(include_tags or []), *([tag] if tag else [])])
     exclude = _tag_names(exclude_tags)
 
     # One tag cannot be both required and excluded.
     if set(include) & set(exclude):
-        return {"total": 0, "items": [], "facets": _facets(status), "mode": mode}
+        return {"total": 0, "items": [], "facets": _facets(status), "mode": mode,
+                "limit": limit, "offset": offset}
 
     # Semantic mode ranks the candidate pool by embedding similarity.
     if mode == "semantic" and q.strip():
@@ -103,7 +137,7 @@ def search(
         params.append(collection_id)
 
     where_sql = " AND ".join(where)
-    order = "bm25(asset_fts)" if q.strip() else SORTS.get(sort, SORTS["newest"])
+    order = _order_clause(sort)
 
     total = conn.execute(
         f"SELECT COUNT(*) AS c FROM assets a{join} WHERE {where_sql}", params
@@ -120,6 +154,8 @@ def search(
         "items": [_card(dict(r)) for r in rows],
         "facets": _facets(status),
         "mode": mode,
+        "limit": limit,
+        "offset": offset,
     }
 
 
